@@ -1,0 +1,43 @@
+{
+  "owner_ids": [123456789],
+  "allowed_group_ids": [-1001234567890],
+  "trusted_group_ids": [-1001234567890],
+  "group_modes": {
+    "-1001234567890": "adaptive"
+  },
+  "default_group_agent": "agent-a",
+  "silent_reaction": "👀",
+  "bot_pair_call_limit": 4,
+  "bot_pair_window_seconds": 120,
+  "group_bot_call_limit": 8,
+  "state_dir": "/tmp/sutang-telegram-bridge-demo",
+  "agents": [
+    {
+      "key": "agent-a",
+      "token_env": "AGENT_A_TELEGRAM_BOT_TOKEN",
+      "command": ["/usr/bin/python3", "examples/echo_agent.py", "Agent A"],
+      "aliases": ["Agent A"],
+      "private_cwd": ".",
+      "group_cwd": ".",
+      "media_root": "examples/media/agent-a"
+    },
+    {
+      "key": "agent-b",
+      "token_env": "AGENT_B_TELEGRAM_BOT_TOKEN",
+      "command": ["/usr/bin/python3", "examples/echo_agent.py", "Agent B"],
+      "aliases": ["Agent B"],
+      "private_cwd": ".",
+      "group_cwd": ".",
+      "media_root": "examples/media/agent-b"
+    },
+    {
+      "key": "agent-c",
+      "token_env": "AGENT_C_TELEGRAM_BOT_TOKEN",
+      "command": ["/usr/bin/python3", "examples/echo_agent.py", "Agent C"],
+      "aliases": ["Agent C"],
+      "private_cwd": ".",
+      "group_cwd": ".",
+      "media_root": "examples/media/agent-c"
+    }
+  ]
+}

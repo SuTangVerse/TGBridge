@@ -1,0 +1,10 @@
+Cmnd_Alias SUTANG_RUN_AGENT_A = /usr/local/libexec/sutang-telegram-bridge/run-agent-a
+Cmnd_Alias SUTANG_RUN_AGENT_B = /usr/local/libexec/sutang-telegram-bridge/run-agent-b
+Cmnd_Alias SUTANG_RUN_AGENT_C = /usr/local/libexec/sutang-telegram-bridge/run-agent-c
+
+Defaults:sutang-bridge env_reset
+Defaults:sutang-bridge secure_path = "/usr/local/bin:/usr/bin:/bin"
+
+sutang-bridge ALL=(agent-a) NOPASSWD: SUTANG_RUN_AGENT_A
+sutang-bridge ALL=(agent-b) NOPASSWD: SUTANG_RUN_AGENT_B
+sutang-bridge ALL=(agent-c) NOPASSWD: SUTANG_RUN_AGENT_C

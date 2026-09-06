@@ -1,0 +1,30 @@
+[Unit]
+Description=SuTang Telegram Multi-Agent Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sutang-bridge
+Group=sutang-bridge
+WorkingDirectory=/opt/sutang-telegram-bridge
+Environment=PYTHONPATH=/opt/sutang-telegram-bridge/src
+Environment=BRIDGE_CONFIG_PATH=/etc/sutang-telegram-bridge/config.json
+EnvironmentFile=/etc/sutang-telegram-bridge/bridge.env
+ExecStart=/usr/bin/python3 -m sutang_telegram_bridge
+Restart=on-failure
+RestartSec=5
+
+StateDirectory=sutang-telegram-bridge
+StateDirectoryMode=0711
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=/var/lib/sutang-telegram-bridge
+
+# If this service invokes sudo-based fixed runners, these may need to remain
+# false; compensate with an exact sudoers allowlist and root-owned runners.
+NoNewPrivileges=false
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

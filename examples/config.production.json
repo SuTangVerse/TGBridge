@@ -1,0 +1,53 @@
+{
+  "owner_ids": [123456789],
+  "allowed_group_ids": [-1001234567890],
+  "trusted_group_ids": [-1001234567890],
+  "group_modes": {
+    "-1001234567890": "adaptive"
+  },
+  "default_group_agent": "agent-a",
+  "silent_reaction": "👀",
+  "state_dir": "/var/lib/sutang-telegram-bridge",
+  "max_attachment_bytes": 20971520,
+  "max_attachments": 8,
+  "max_archive_files": 256,
+  "max_archive_bytes": 104857600,
+  "agent_timeout_seconds": 180,
+  "context_messages": 24,
+  "discussion_max_rounds": 5,
+  "bot_pair_call_limit": 4,
+  "bot_pair_window_seconds": 120,
+  "group_bot_call_limit": 8,
+  "agents": [
+    {
+      "key": "agent-a",
+      "token_env": "AGENT_A_TELEGRAM_BOT_TOKEN",
+      "command": ["/usr/bin/sudo", "-n", "-u", "agent-a", "/usr/local/libexec/sutang-telegram-bridge/run-agent-a"],
+      "aliases": ["Agent A"],
+      "private_cwd": "/home/agent-a/private",
+      "group_cwd": "/home/agent-a/shared",
+      "media_root": "/home/agent-a/shared/.telegram-media",
+      "attachment_group": "sutang-agent-files"
+    },
+    {
+      "key": "agent-b",
+      "token_env": "AGENT_B_TELEGRAM_BOT_TOKEN",
+      "command": ["/usr/bin/sudo", "-n", "-u", "agent-b", "/usr/local/libexec/sutang-telegram-bridge/run-agent-b"],
+      "aliases": ["Agent B"],
+      "private_cwd": "/home/agent-b/private",
+      "group_cwd": "/home/agent-b/shared",
+      "media_root": "/home/agent-b/shared/.telegram-media",
+      "attachment_group": "sutang-agent-files"
+    },
+    {
+      "key": "agent-c",
+      "token_env": "AGENT_C_TELEGRAM_BOT_TOKEN",
+      "command": ["/usr/bin/sudo", "-n", "-u", "agent-c", "/usr/local/libexec/sutang-telegram-bridge/run-agent-c"],
+      "aliases": ["Agent C"],
+      "private_cwd": "/home/agent-c/private",
+      "group_cwd": "/home/agent-c/shared",
+      "media_root": "/home/agent-c/shared/.telegram-media",
+      "attachment_group": "sutang-agent-files"
+    }
+  ]
+}
