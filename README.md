@@ -40,6 +40,8 @@ python3 -m unittest discover -s tests -v
 - 支持保留发送者 numeric ID、用户名、显示名、回复关系和 Topic ID。
 - 支持使用 Telegram 原生 typing 状态并一次性发送最终答案。
 - 支持长文本清理和自动安全分段。
+- 可选为支持 resume 的 Agent 按 `Agent + 群 + Topic` 保存独立 provider session；
+  后续调用只补交成功游标之后仍在有界缓冲区中的增量消息。
 
 ### 多 Agent 协作
 
@@ -82,6 +84,8 @@ python3 -m unittest discover -s tests -v
 - 支持将 Telegram 更新持久化到 SQLite inbox 后再推进 offset。
 - 支持将待发送回复持久化到 SQLite outbox 后再调用 Telegram。
 - 支持服务崩溃或重启后继续处理未完成消息。
+- 增量 session 只有在 Telegram 交付完成后才提交游标；发送失败只重放 outbox，
+  失效 session 自动丢弃并用完整有界上下文重试一次。
 - 支持 Telegram update 去重并避免重复调用模型。
 - 支持逐项记录多段文字和媒体的发送进度。
 - 支持通过 `/delivery` 查看失败交付和死信记录。
@@ -192,6 +196,8 @@ src/sutang_telegram_bridge/
 - “支持发送 GIF”不等于“Agent 可以上网找 GIF”。默认安全配置不允许群聊任意下载网络文件；应使用同一聊天中登记过的媒体或 Agent 自己的受控媒体库。
 - ZIP/TAR 可以安全展开；RAR/7z 默认只作为普通文件交给 Agent，不自动解压。
 - 外部群聊不应拥有私聊记忆、任意文件读取或执行系统操作的权限。
+- 增量 session 不是长期记忆库，不包含私人记忆适配器；可信状态、Agent 命令或
+  Topic 变化会换 session，私聊从不与群聊共用 session。
 - 各厂商 CLI 参数不同，仓库提供稳定 wrapper 协议而不内置登录凭据；部署者需把自己的非交互命令接到固定 runner。
 - 语音转写同样采用固定 wrapper；仓库不捆绑模型权重或云端语音 API Key。未配置转写器时，语音仍会作为附件交给 Agent，但不会伪称已经识别。
 - Telegram 发送接口没有客户端幂等键。桥会逐项保存交付进度，但若进程恰好在“Telegram 已接受、SQLite 尚未确认”的极短窗口崩溃，仍可能重复最后一项；不会因此再次调用 Agent。

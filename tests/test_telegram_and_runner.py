@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sutang_telegram_bridge.models import AgentConfig
 from sutang_telegram_bridge.models import TranscriptionConfig
-from sutang_telegram_bridge.runner import AgentRunner
+from sutang_telegram_bridge.runner import AgentRunner, SessionResumeError
 from sutang_telegram_bridge.telegram import TelegramClient, parse_update
 from sutang_telegram_bridge.transcription import VoiceTranscriber
 
@@ -103,6 +103,33 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         )
         answer = await AgentRunner().run(agent, "hello", True, 5)
         self.assertEqual(answer, "answer:hello")
+
+    async def test_runner_reads_session_marker_and_passes_resume_in_environment(self):
+        code = (
+            "import json,os,sys; "
+            "print('answer:' + os.environ.get('TG_BRIDGE_SESSION_MODE','')); "
+            "print('TG_BRIDGE_SESSION_V1 ' + json.dumps({'session_id': "
+            "os.environ.get('TG_BRIDGE_SESSION_ID','thread-new')}), file=sys.stderr)"
+        )
+        agent = AgentConfig("a", "TOKEN", (sys.executable, "-c", code))
+        fresh = await AgentRunner().run(agent, "hello", False, 5)
+        resumed = await AgentRunner().run(
+            agent, "hello", False, 5, session_id="thread-new"
+        )
+        self.assertEqual(fresh, "answer:fresh")
+        self.assertEqual(fresh.session_id, "thread-new")
+        self.assertEqual(resumed, "answer:resume")
+        self.assertEqual(resumed.session_id, "thread-new")
+
+    async def test_runner_marks_explicit_resume_rejection(self):
+        agent = AgentConfig(
+            "a", "TOKEN",
+            (sys.executable, "-c", "import sys; print('TG_BRIDGE_SESSION_INVALID',file=sys.stderr);sys.exit(2)"),
+        )
+        with self.assertRaises(SessionResumeError):
+            await AgentRunner().run(
+                agent, "hello", False, 5, session_id="thread-old"
+            )
 
     async def test_runner_timeout_terminates_process_group(self):
         agent = AgentConfig(

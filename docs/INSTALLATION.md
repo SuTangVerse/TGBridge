@@ -96,3 +96,5 @@ sudo systemctl status sutang-telegram-bridge.service
 11. 配置内 Bot 可通过 `send_bot_text("@TargetExampleBot", text)` 发起原生私聊；未知或仅用户名相同的 Bot 不能触发 Agent。
 12. 同一 Bot 对快速往返在达到 `bot_pair_call_limit` 后静默停止，重启服务也不会提前清空滚动窗口。
 13. 在一次 Bot 调用尚未完成时发送新的人类群消息，旧结果不得发送；`/flow_status` 应显示新的 epoch。一个 Agent 的可见群回复应进入其他 Agent 的被动上下文，但不能自行唤醒它们。
+14. 若开启增量 session，验证同群同 Topic 第二轮使用 resume、另一 Topic 使用 fresh；
+    模拟无效 session 时只能 fresh 重试一次，模拟 Telegram 发送失败时游标不得推进。
