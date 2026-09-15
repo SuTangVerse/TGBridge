@@ -8,12 +8,18 @@ import re
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from time import time
 from typing import Any
 
 from .attachments import attachment_manifest, download_attachments, grant_group_access, media_file_ids
 from .approval import APPROVAL_RE, approval_markup, extract_approval_control
 from .identity import identity_merge_conflict, render_current, speaker
 from .group_sessions import GroupSessionStore
+from .group_scene import (
+    GroupSceneSignal,
+    extract_group_scene_signal,
+    strip_group_scene_signal,
+)
 from .media import (
     MEDIA_RE,
     REACTION_RE,
@@ -34,6 +40,9 @@ TEAM_RE = re.compile(r"^/team(?:@\w+)?(?:\s+(\d+))?(?:\s+([\s\S]+))?$", re.I)
 GROUP_DECISION_RE = re.compile(r"^gtr:([0-9a-f]{16}):(trusted|external)$")
 AGENT_SWITCH_RE = re.compile(r"^ags:(all|-?\d+):(pause|resume)$")
 ANOMALY_ACTION_RE = re.compile(r"^an:([0-9a-f]{16}):pause$")
+GROUP_SCENE_ACTION_RE = re.compile(
+    r"^gsc:([0-9a-f]{16}):(allow|deny|close)$"
+)
 LOW_VALUE_BOT_REPLY_RE = re.compile(
     r"^(?:收到|好的?|同意|赞同|明白|了解|没问题|ok(?:ay)?|noted|agreed|acknowledged)[。.!！]?$",
     re.I,
@@ -285,6 +294,7 @@ class Bridge:
                     "trusted" if self._trusted_group(message.chat_id) else "external"
                 ),
             )
+            self._expire_group_scene_scope(message)
             if self._command(message.text) != "/flow_status":
                 self.store.begin_group_epoch(
                     message.chat_id, message.thread_id, message.message_id
@@ -305,7 +315,7 @@ class Bridge:
             if not message.is_private:
                 for agent in self.config.agents:
                     if agent.incremental_group_sessions:
-                        self.group_sessions.discard(
+                        self.group_sessions.discard_prefix(
                             f"{agent.key}:{message.chat_id}:{message.thread_id or 0}"
                         )
             return self._text_operations(message.bot_key, message, "已停止。" if stopped else "当前没有运行中的任务。")
@@ -317,6 +327,9 @@ class Bridge:
             if message.is_private or message.sender_id not in self.config.owner_ids:
                 return []
             return self._flow_status_operations(message)
+
+        if command in {"/scene_open", "/scene_close", "/scene_status"}:
+            return await self._handle_group_scene_command(message, command)
 
         if command in {"/delivery", "/retry_update"}:
             return self._handle_delivery_command(message, command)
@@ -402,6 +415,17 @@ class Bridge:
                 task.cancel()
                 stopped = True
         return stopped
+
+    def _cancel_scope(
+        self,
+        scope: tuple[str, int, int],
+        current: asyncio.Task[Any] | None,
+    ) -> bool:
+        task = self._active.get(scope)
+        if task is None or task is current or task.done():
+            return False
+        task.cancel()
+        return True
 
     @staticmethod
     def _command(text: str) -> str:
@@ -863,6 +887,221 @@ class Bridge:
             )
         return self._text_operations(message.bot_key, message, "\n".join(lines))
 
+    @staticmethod
+    def _group_scene_markup(scene_id: str, *, active: bool = False) -> dict[str, Any]:
+        if active:
+            buttons = [
+                {
+                    "text": "🔒 关闭公开场景",
+                    "callback_data": f"gsc:{scene_id}:close",
+                }
+            ]
+        else:
+            buttons = [
+                {
+                    "text": "允许在本群公开",
+                    "callback_data": f"gsc:{scene_id}:allow",
+                },
+                {
+                    "text": "保持私密",
+                    "callback_data": f"gsc:{scene_id}:deny",
+                },
+            ]
+        return {"inline_keyboard": [buttons]}
+
+    @staticmethod
+    def _group_scene_excerpt(text: str) -> str:
+        safe = redact_access_material(str(text))
+        safe = re.sub(r"(?i)https?://\S+", "[URL omitted]", safe)
+        return " ".join(safe.split())[:240]
+
+    @staticmethod
+    def _safe_scene_reply(reply_to: dict[str, Any] | None) -> dict[str, Any]:
+        if not reply_to:
+            return {}
+        safe = dict(reply_to)
+        for field in ("text", "caption"):
+            if field in safe:
+                safe[field] = redact_access_material(str(safe[field]))[-4000:]
+        return safe
+
+    @staticmethod
+    def _safe_scene_raw_message(raw_message: dict[str, Any]) -> dict[str, Any]:
+        safe: dict[str, Any] = {}
+        for key in ("photo", "document", "animation", "sticker", "voice", "audio"):
+            if key in raw_message:
+                safe[key] = raw_message[key]
+        return safe
+
+    def _group_scene_request_operations(
+        self,
+        agent: AgentConfig,
+        message: IncomingMessage,
+        signal: GroupSceneSignal,
+    ) -> list[dict[str, Any]]:
+        safe_text = redact_access_material(message.text).strip()[:12000]
+        summary = self._group_scene_excerpt(signal.summary)
+        row, _ = self.store.create_group_scene_request(
+            request_key=(
+                f"{agent.key}:{message.chat_id}:{message.thread_id or 0}:"
+                f"{message.sender_id}:{message.message_id}"
+            ),
+            bot_key=agent.key,
+            chat_id=message.chat_id,
+            thread_id=message.thread_id,
+            owner_id=message.sender_id,
+            source_update_id=message.update_id,
+            source_message_id=message.message_id,
+            chat_title=message.chat_title,
+            sender_name=message.sender_name,
+            sender_username=message.sender_username,
+            source_text=safe_text,
+            reply_to=self._safe_scene_reply(message.reply_to),
+            raw_message=self._safe_scene_raw_message(message.raw_message),
+            summary=summary,
+            ttl_seconds=self.config.group_scene_request_ttl_seconds,
+        )
+        topic = f" · topic {message.thread_id}" if message.thread_id else ""
+        group_label = (message.chat_title.strip() or str(message.chat_id))[:120]
+        notice = (
+            "🔐 群聊公开场景确认\n"
+            f"群：{group_label}{topic}\n"
+            f"原话：{self._group_scene_excerpt(safe_text)}\n"
+            f"识别意图：{summary}\n\n"
+            "允许后只把原消息回放到原群、原 Topic，并限时开启仅属于当前 Owner "
+            "的公开场景。它不授予私人文件、记忆、凭据、工具或外部动作权限。"
+            "你可以在这里关闭，也可以在原群发送 /scene_close。"
+        )
+        return [
+            {
+                "kind": "text",
+                "bot_key": agent.key,
+                "chat_id": message.sender_id,
+                "thread_id": None,
+                "reply_to": None,
+                "text": notice,
+                "reply_markup": self._group_scene_markup(str(row["scene_id"])),
+            }
+        ]
+
+    def _clear_group_scene_runtime(
+        self,
+        agent_key: str,
+        chat_id: int,
+        thread_id: int | None,
+        *,
+        cancel: bool,
+    ) -> None:
+        if cancel:
+            self._cancel_scope(
+                (agent_key, int(chat_id), int(thread_id or 0)),
+                asyncio.current_task(),
+            )
+        self.store.clear_context(agent_key, chat_id, thread_id)
+        agent = self.agents.get(agent_key)
+        if agent is not None and agent.incremental_group_sessions:
+            self.group_sessions.discard_prefix(
+                f"{agent_key}:{int(chat_id)}:{int(thread_id or 0)}"
+            )
+
+    def _expire_group_scene_scope(self, message: IncomingMessage) -> None:
+        agent = self.agents.get(message.bot_key)
+        if agent is None:
+            return
+        must_close = not agent.group_scene_consent or not self._trusted_group(
+            message.chat_id
+        )
+        cleared = (
+            self.store.close_group_scenes_for_scope(
+                agent.key, message.chat_id, message.thread_id
+            )
+            if must_close
+            else self.store.expire_group_scenes(
+                agent.key, message.chat_id, message.thread_id
+            )
+        )
+        if cleared:
+            self._clear_group_scene_runtime(
+                agent.key,
+                message.chat_id,
+                message.thread_id,
+                cancel=False,
+            )
+
+    async def _handle_group_scene_command(
+        self, message: IncomingMessage, command: str
+    ) -> list[dict[str, Any]]:
+        agent = self.agents[message.bot_key]
+        if (
+            message.sender_id not in self.config.owner_ids
+            or not self._control_targets_this_bot(message)
+        ):
+            return []
+        if message.is_private:
+            return self._text_operations(
+                agent.key,
+                message,
+                "请在目标可信群的对应 Topic 使用场景命令。",
+            )
+        if not agent.group_scene_consent:
+            return self._text_operations(
+                agent.key,
+                message,
+                "这个 Agent 尚未开启群聊场景授权。",
+            )
+        if not self._trusted_group(message.chat_id):
+            return self._text_operations(
+                agent.key,
+                message,
+                "群聊场景授权只在可信群可用。",
+            )
+        active = self._active_group_scene(agent, message)
+        if command == "/scene_status":
+            if active is None:
+                text = "当前群、当前 Topic 没有开启中的公开场景。"
+            else:
+                remaining = max(0, int(float(active["active_expires_at"]) - time()))
+                text = f"公开场景已开启，约剩 {max(1, (remaining + 59) // 60)} 分钟。"
+            return self._text_operations(agent.key, message, text)
+        if command == "/scene_close":
+            closed = self.store.close_group_scene(
+                bot_key=agent.key,
+                owner_id=message.sender_id,
+                chat_id=message.chat_id,
+                thread_id=message.thread_id,
+            )
+            if closed is not None:
+                self._clear_group_scene_runtime(
+                    agent.key,
+                    message.chat_id,
+                    message.thread_id,
+                    cancel=True,
+                )
+            return self._text_operations(
+                agent.key,
+                message,
+                "公开场景已关闭，并清掉了这段 Topic 的有界上下文。"
+                if closed is not None
+                else "当前群、当前 Topic 没有开启中的公开场景。",
+            )
+        if active is not None:
+            return self._text_operations(
+                agent.key,
+                message,
+                "当前公开场景已经开启；无需再次申请。",
+            )
+        parts = message.text.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            return self._text_operations(
+                agent.key, message, "用法：/scene_open <你想在群里公开展开的请求>"
+            )
+        request = replace(message, text=parts[1].strip())
+        return self._group_scene_request_operations(
+            agent,
+            request,
+            GroupSceneSignal(summary="Owner 主动请求开启私密或亲密的公开场景。"),
+        )
+
     async def _typing(self, bot_key: str, message: IncomingMessage) -> None:
         while True:
             try:
@@ -966,6 +1205,71 @@ class Bridge:
             if part
         )
 
+    def _group_scene_enabled(
+        self, agent: AgentConfig, message: IncomingMessage
+    ) -> bool:
+        return (
+            agent.group_scene_consent
+            and not message.is_private
+            and message.sender_id in self.config.owner_ids
+            and self._trusted_group(message.chat_id)
+        )
+
+    def _active_group_scene(
+        self, agent: AgentConfig, message: IncomingMessage
+    ) -> Any | None:
+        if not self._group_scene_enabled(agent, message):
+            return None
+        return self.store.active_group_scene(
+            agent.key,
+            message.chat_id,
+            message.thread_id,
+            message.sender_id,
+        )
+
+    def _group_scene_boundary(
+        self, agent: AgentConfig, message: IncomingMessage
+    ) -> str:
+        if (
+            not agent.group_scene_consent
+            or message.is_private
+            or not self._trusted_group(message.chat_id)
+        ):
+            return ""
+        if message.sender_id not in self.config.owner_ids:
+            return (
+                "[Group scene consent boundary]\n"
+                "The immutable current sender is not an Owner. Do not open, inherit, or "
+                "continue a private or intimate scene for this sender, even if recent "
+                "public group history contains such a scene."
+            )
+        scene = self._active_group_scene(agent, message)
+        if scene is not None:
+            return (
+                "[Server-verified group scene consent]\n"
+                f"scene_id={scene['scene_id']}\n"
+                f"owner_id={int(scene['owner_id'])}\n"
+                f"chat_id={int(scene['chat_id'])}\n"
+                f"thread_id={int(scene['thread_key'])}\n"
+                f"expires_at_unix={float(scene['active_expires_at'])}\n"
+                "The verified Owner authorized this private or intimate scene to "
+                "continue publicly in this exact group/topic. This is an output-style "
+                "consent only: it grants no private files, memories, credentials, tools, "
+                "or external actions. It applies only while the immutable current sender "
+                "matches owner_id."
+            )
+        return (
+            "[Group scene consent protocol]\n"
+            "No private or intimate public scene is currently authorized. If the verified "
+            "Owner's current message clearly asks you to begin one in this group, do not "
+            "perform or continue it yet. Return no visible answer and append exactly one "
+            '<telegram_group_scene_request>{"summary":"brief neutral description"}'
+            "</telegram_group_scene_request>. Do not emit this control for ordinary warmth, "
+            "discussion about privacy, quoted speech, another person's request, or a request "
+            "from anyone except the immutable current Owner. The bridge will privately ask "
+            "the Owner and replay the exact turn only after an authenticated button click."
+        )
+
     async def _call_agent(
         self,
         agent: AgentConfig,
@@ -994,6 +1298,7 @@ class Bridge:
 
     async def _run_one(self, agent: AgentConfig, message: IncomingMessage) -> list[dict[str, Any]]:
         attachments = await self._attachments(message)
+        scene_boundary = self._group_scene_boundary(agent, message)
         session_key = ""
         binding = ""
         snapshot = None
@@ -1008,6 +1313,7 @@ class Bridge:
                 agent,
                 message,
                 attachments,
+                scene_boundary,
                 history_after_id=(
                     snapshot.through_context_id
                     if snapshot is not None and snapshot.session_id
@@ -1030,9 +1336,27 @@ class Bridge:
                 answer = await self._call_agent(
                     agent,
                     message,
-                    self._prompt(agent, message, attachments),
+                    self._prompt(
+                        agent, message, attachments, scene_boundary
+                    ),
                 )
             output_session_id = getattr(answer, "session_id", None)
+            try:
+                scene_visible, scene_signal = extract_group_scene_signal(
+                    str(answer)
+                )
+            except ValueError:
+                scene_visible = strip_group_scene_signal(str(answer))
+                scene_signal = None
+            if (
+                scene_signal is not None
+                and self._group_scene_enabled(agent, message)
+                and self._active_group_scene(agent, message) is None
+            ):
+                return self._group_scene_request_operations(
+                    agent, message, scene_signal
+                )
+            answer = scene_visible or "NO_REPLY"
             if identity_merge_conflict(self.store, message.chat_id, answer):
                 answer = "我不能根据现有消息把这两位参与者认作同一个人。请明确指名或回复对应消息。"
             operations, visible = self._answer_operations(agent, message, answer)
@@ -1075,7 +1399,13 @@ class Bridge:
     def _group_session_key(
         self, agent: AgentConfig, message: IncomingMessage
     ) -> str:
-        return f"{agent.key}:{message.chat_id}:{message.thread_id or 0}"
+        base = f"{agent.key}:{message.chat_id}:{message.thread_id or 0}"
+        if not agent.group_scene_consent:
+            return base
+        active_scene = self._active_group_scene(agent, message)
+        if active_scene is None:
+            return base + ":public"
+        return base + f":scene:{active_scene['scene_id']}"
 
     def _group_session_binding(
         self, agent: AgentConfig, message: IncomingMessage
@@ -1087,6 +1417,18 @@ class Bridge:
             "group_cwd": str(agent.group_cwd or ""),
             "trust": "trusted" if self._trusted_group(message.chat_id) else "external",
         }
+        if agent.group_scene_consent:
+            active_scene = self._active_group_scene(agent, message)
+            value["group_scene_consent"] = True
+            value["group_scene"] = (
+                str(active_scene["scene_id"])
+                if active_scene is not None
+                else (
+                    "closed-owner"
+                    if message.sender_id in self.config.owner_ids
+                    else "unauthorized-sender"
+                )
+            )
         return hashlib.sha256(
             json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -1117,6 +1459,7 @@ class Bridge:
     def _answer_operations(
         self, agent: AgentConfig, message: IncomingMessage, answer: str
     ) -> tuple[list[dict[str, Any]], str]:
+        answer = strip_group_scene_signal(str(answer))
         try:
             visible, approval = extract_approval_control(answer)
             visible, reaction = extract_reaction_control(visible)
@@ -1220,6 +1563,8 @@ class Bridge:
             return await self._handle_agent_switch_callback(message)
         if ANOMALY_ACTION_RE.fullmatch(message.callback_data):
             return await self._handle_anomaly_callback(message)
+        if GROUP_SCENE_ACTION_RE.fullmatch(message.callback_data):
+            return await self._handle_group_scene_callback(message)
         return await self._handle_approval_callback(message)
 
     def _handle_membership_change(
@@ -1413,6 +1758,159 @@ class Bridge:
                     update_id,
                     type(exc).__name__,
                 )
+
+    async def _handle_group_scene_callback(
+        self, message: IncomingMessage
+    ) -> list[dict[str, Any]]:
+        client = self.clients[message.bot_key]
+        match = GROUP_SCENE_ACTION_RE.fullmatch(message.callback_data)
+        if (
+            match is None
+            or not message.is_private
+            or message.sender_id not in self.config.owner_ids
+        ):
+            await client.answer_callback(
+                message.callback_query_id,
+                "只有已验证的 Owner 可以决定这次公开场景。",
+            )
+            return []
+        scene_id, action = match.groups()
+        if action == "close":
+            scene = self.store.close_group_scene(
+                bot_key=message.bot_key,
+                owner_id=message.sender_id,
+                scene_id=scene_id,
+            )
+            if scene is None:
+                await client.answer_callback(
+                    message.callback_query_id,
+                    "这次公开场景已经关闭或过期。",
+                )
+                await client.clear_reply_markup(message.chat_id, message.message_id)
+                return []
+            self._clear_group_scene_runtime(
+                message.bot_key,
+                int(scene["chat_id"]),
+                int(scene["thread_key"]),
+                cancel=True,
+            )
+            await client.answer_callback(message.callback_query_id, "公开场景已关闭。")
+            await client.clear_reply_markup(message.chat_id, message.message_id)
+            return [
+                {
+                    "kind": "text",
+                    "bot_key": message.bot_key,
+                    "chat_id": int(scene["chat_id"]),
+                    "thread_id": int(scene["thread_key"]) or None,
+                    "reply_to": None,
+                    "text": "公开场景已关闭。",
+                }
+            ]
+
+        result = self.store.decide_group_scene(
+            scene_id,
+            action,
+            bot_key=message.bot_key,
+            owner_id=message.sender_id,
+            update_id=message.update_id,
+            active_ttl_seconds=self.config.group_scene_active_ttl_seconds,
+        )
+        status = str(result["status"])
+        if status == "denied":
+            await client.answer_callback(message.callback_query_id, "已保持私密，不会在群里展开。")
+            await client.clear_reply_markup(message.chat_id, message.message_id)
+            return []
+        if status not in {"activated", "replay"}:
+            labels = {
+                "expired": "这次确认已过期。",
+                "already": "这次确认已经处理过。",
+                "unknown": "这次确认无效。",
+                "invalid": "这次确认无效。",
+            }
+            await client.answer_callback(
+                message.callback_query_id,
+                labels.get(status, "这次确认未能生效。"),
+            )
+            if status != "replay":
+                await client.clear_reply_markup(message.chat_id, message.message_id)
+            return []
+        agent = self.agents[message.bot_key]
+        target_chat_id = int(result["chat_id"])
+        target_thread_id = int(result["thread_key"]) or None
+        if (
+            not agent.group_scene_consent
+            or not self._group_allowed(target_chat_id)
+            or not self._trusted_group(target_chat_id)
+        ):
+            self.store.close_group_scene(
+                bot_key=message.bot_key,
+                owner_id=message.sender_id,
+                scene_id=scene_id,
+            )
+            await client.answer_callback(
+                message.callback_query_id,
+                "目标群已不再符合可信群条件，未放行。",
+            )
+            await client.clear_reply_markup(message.chat_id, message.message_id)
+            return []
+        if status == "activated" and agent.incremental_group_sessions:
+            self.group_sessions.discard_prefix(
+                f"{agent.key}:{target_chat_id}:{target_thread_id or 0}"
+            )
+        try:
+            reply_to = json.loads(str(result["reply_json"]))
+            raw_message = json.loads(str(result["raw_message_json"]))
+        except json.JSONDecodeError:
+            reply_to = {}
+            raw_message = {}
+        original = IncomingMessage(
+            bot_key=agent.key,
+            update_id=int(result["source_update_id"]),
+            chat_id=target_chat_id,
+            chat_type="supergroup",
+            message_id=int(result["source_message_id"]),
+            thread_id=target_thread_id,
+            sender_id=int(result["owner_id"]),
+            sender_name=str(result["sender_name"]),
+            sender_username=str(result["sender_username"]),
+            sender_is_bot=False,
+            text=str(result["source_text"]),
+            reply_to=reply_to or None,
+            raw_message=raw_message,
+            chat_title=str(result["chat_title"]),
+        )
+        if status == "activated":
+            await client.answer_callback(
+                message.callback_query_id,
+                "已允许，正在回原群回应。",
+            )
+            await client.clear_reply_markup(message.chat_id, message.message_id)
+        scope = (agent.key, target_chat_id, target_thread_id or 0)
+        current = asyncio.current_task()
+        assert current is not None
+        self._cancel_scope(scope, current)
+        lock = self._group_locks.setdefault(scope, asyncio.Lock())
+        async with lock:
+            self._active[scope] = current
+            try:
+                operations = await self._run_one(agent, original)
+            finally:
+                if self._active.get(scope) is current:
+                    self._active.pop(scope, None)
+        operations.append(
+            {
+                "kind": "text",
+                "bot_key": agent.key,
+                "chat_id": message.sender_id,
+                "thread_id": None,
+                "reply_to": message.message_id,
+                "text": (
+                    "公开场景只对原群、原 Topic 生效；你可以随时在这里关闭。"
+                ),
+                "reply_markup": self._group_scene_markup(scene_id, active=True),
+            }
+        )
+        return operations
 
     async def _handle_approval_callback(
         self, message: IncomingMessage

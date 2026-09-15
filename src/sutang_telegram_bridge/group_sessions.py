@@ -222,6 +222,22 @@ class GroupSessionStore:
             )
             self._save_unlocked(state)
 
+    def discard_prefix(self, prefix: str) -> None:
+        """Drop every provider session in one bounded logical scope."""
+        with self._lock():
+            state = self._read_unlocked()
+            sessions = state.setdefault("sessions", {})
+            matched = [
+                key
+                for key in sessions
+                if key == prefix or key.startswith(prefix + ":")
+            ]
+            if not matched:
+                return
+            for key in matched:
+                sessions.pop(key, None)
+            self._save_unlocked(state)
+
     def inspect(self, key: str) -> dict:
         with self._lock():
             return dict(self._record(self._read_unlocked(), key))

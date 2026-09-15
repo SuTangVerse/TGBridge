@@ -176,6 +176,34 @@ class DeliveryStore:
                 expires_at REAL NOT NULL,
                 decided_at REAL
             );
+
+            CREATE TABLE IF NOT EXISTS group_scene_consents (
+                scene_id TEXT PRIMARY KEY,
+                request_key TEXT NOT NULL UNIQUE,
+                bot_key TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                thread_key INTEGER NOT NULL,
+                owner_id INTEGER NOT NULL,
+                source_update_id INTEGER NOT NULL,
+                source_message_id INTEGER NOT NULL,
+                chat_title TEXT NOT NULL,
+                sender_name TEXT NOT NULL,
+                sender_username TEXT NOT NULL,
+                source_text TEXT NOT NULL,
+                reply_json TEXT NOT NULL,
+                raw_message_json TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                request_expires_at REAL NOT NULL,
+                active_expires_at REAL,
+                decided_at REAL,
+                decision_update_id INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS group_scene_scope_idx
+                ON group_scene_consents(
+                    bot_key, chat_id, thread_key, owner_id, state
+                );
             """
         )
         self.db.commit()
@@ -662,6 +690,18 @@ class DeliveryStore:
             for row in rows
         ]
 
+    def clear_context(
+        self, agent_key: str, chat_id: int, thread_id: int | None
+    ) -> None:
+        with self.db:
+            self.db.execute(
+                """
+                DELETE FROM context
+                WHERE agent_key=? AND chat_id=? AND thread_key=?
+                """,
+                (agent_key, int(chat_id), int(thread_id or 0)),
+            )
+
     def remember_participant(
         self,
         chat_id: int,
@@ -1044,3 +1084,313 @@ class DeliveryStore:
             "SELECT * FROM approvals WHERE approval_id=?", (approval_id,)
         ).fetchone()
         return {"status": "resolved", **dict(resolved)}
+
+    def create_group_scene_request(
+        self,
+        *,
+        request_key: str,
+        bot_key: str,
+        chat_id: int,
+        thread_id: int | None,
+        owner_id: int,
+        source_update_id: int,
+        source_message_id: int,
+        chat_title: str,
+        sender_name: str,
+        sender_username: str,
+        source_text: str,
+        reply_to: dict[str, Any] | None,
+        raw_message: dict[str, Any],
+        summary: str,
+        ttl_seconds: float,
+        now: float | None = None,
+    ) -> tuple[sqlite3.Row, bool]:
+        stamp = time.time() if now is None else float(now)
+        existing = self.db.execute(
+            "SELECT * FROM group_scene_consents WHERE request_key=?",
+            (str(request_key),),
+        ).fetchone()
+        if existing is not None:
+            return existing, False
+        scene_id = secrets.token_hex(8)
+        with self.db:
+            cursor = self.db.execute(
+                """
+                INSERT OR IGNORE INTO group_scene_consents (
+                    scene_id, request_key, bot_key, chat_id, thread_key,
+                    owner_id, source_update_id, source_message_id, chat_title,
+                    sender_name, sender_username, source_text, reply_json,
+                    raw_message_json, summary, state, created_at, request_expires_at,
+                    active_expires_at, decided_at, decision_update_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          'pending', ?, ?, NULL, NULL, NULL)
+                """,
+                (
+                    scene_id,
+                    str(request_key),
+                    str(bot_key),
+                    int(chat_id),
+                    int(thread_id or 0),
+                    int(owner_id),
+                    int(source_update_id),
+                    int(source_message_id),
+                    str(chat_title)[:200],
+                    str(sender_name)[:200],
+                    str(sender_username)[:100],
+                    str(source_text)[:12000],
+                    json.dumps(reply_to or {}, ensure_ascii=False)[:24000],
+                    json.dumps(raw_message, ensure_ascii=False)[:64000],
+                    str(summary)[:240],
+                    stamp,
+                    stamp + max(1.0, float(ttl_seconds)),
+                ),
+            )
+        row = self.db.execute(
+            "SELECT * FROM group_scene_consents WHERE request_key=?",
+            (str(request_key),),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("group scene request disappeared")
+        return row, cursor.rowcount == 1
+
+    def decide_group_scene(
+        self,
+        scene_id: str,
+        action: str,
+        *,
+        bot_key: str,
+        owner_id: int,
+        update_id: int,
+        active_ttl_seconds: float,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        stamp = time.time() if now is None else float(now)
+        if action not in {"allow", "deny"}:
+            return {"status": "invalid"}
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT * FROM group_scene_consents WHERE scene_id=?",
+                (str(scene_id),),
+            ).fetchone()
+            if (
+                row is None
+                or str(row["bot_key"]) != str(bot_key)
+                or int(row["owner_id"]) != int(owner_id)
+            ):
+                self.db.commit()
+                return {"status": "unknown"}
+            if str(row["state"]) == "active" and action == "allow":
+                self.db.commit()
+                status = (
+                    "replay"
+                    if int(row["decision_update_id"] or -1) == int(update_id)
+                    else "already"
+                )
+                return {"status": status, **dict(row)}
+            if str(row["state"]) != "pending":
+                self.db.commit()
+                return {"status": "already"}
+            if float(row["request_expires_at"]) < stamp:
+                self.db.execute(
+                    """
+                    UPDATE group_scene_consents
+                    SET state='expired', decided_at=?, source_text='',
+                        reply_json='{}', raw_message_json='{}'
+                    WHERE scene_id=?
+                    """,
+                    (stamp, str(scene_id)),
+                )
+                self.db.commit()
+                return {"status": "expired"}
+            if action == "deny":
+                self.db.execute(
+                    """
+                    UPDATE group_scene_consents
+                    SET state='denied', decided_at=?, decision_update_id=?,
+                        source_text='', reply_json='{}', raw_message_json='{}'
+                    WHERE scene_id=?
+                    """,
+                    (stamp, int(update_id), str(scene_id)),
+                )
+                self.db.commit()
+                return {"status": "denied", **dict(row)}
+            self.db.execute(
+                """
+                UPDATE group_scene_consents SET state='closed', decided_at=?,
+                    source_text='', reply_json='{}', raw_message_json='{}'
+                WHERE bot_key=? AND chat_id=? AND thread_key=? AND owner_id=?
+                  AND state IN ('pending', 'active') AND scene_id<>?
+                """,
+                (
+                    stamp,
+                    str(bot_key),
+                    int(row["chat_id"]),
+                    int(row["thread_key"]),
+                    int(owner_id),
+                    str(scene_id),
+                ),
+            )
+            self.db.execute(
+                """
+                UPDATE group_scene_consents
+                SET state='active', active_expires_at=?, decided_at=?,
+                    decision_update_id=?
+                WHERE scene_id=? AND state='pending'
+                """,
+                (
+                    stamp + max(1.0, float(active_ttl_seconds)),
+                    stamp,
+                    int(update_id),
+                    str(scene_id),
+                ),
+            )
+            active = self.db.execute(
+                "SELECT * FROM group_scene_consents WHERE scene_id=?",
+                (str(scene_id),),
+            ).fetchone()
+            self.db.commit()
+            return {"status": "activated", **dict(active)}
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def active_group_scene(
+        self,
+        bot_key: str,
+        chat_id: int,
+        thread_id: int | None,
+        owner_id: int,
+        *,
+        now: float | None = None,
+    ) -> sqlite3.Row | None:
+        stamp = time.time() if now is None else float(now)
+        return self.db.execute(
+            """
+            SELECT * FROM group_scene_consents
+            WHERE bot_key=? AND chat_id=? AND thread_key=? AND owner_id=?
+              AND state='active' AND active_expires_at>=?
+            ORDER BY decided_at DESC LIMIT 1
+            """,
+            (
+                str(bot_key),
+                int(chat_id),
+                int(thread_id or 0),
+                int(owner_id),
+                stamp,
+            ),
+        ).fetchone()
+
+    def close_group_scene(
+        self,
+        *,
+        bot_key: str,
+        owner_id: int,
+        scene_id: str | None = None,
+        chat_id: int | None = None,
+        thread_id: int | None = None,
+        now: float | None = None,
+    ) -> sqlite3.Row | None:
+        stamp = time.time() if now is None else float(now)
+        if scene_id is not None:
+            row = self.db.execute(
+                """
+                SELECT * FROM group_scene_consents
+                WHERE scene_id=? AND bot_key=? AND owner_id=? AND state='active'
+                """,
+                (str(scene_id), str(bot_key), int(owner_id)),
+            ).fetchone()
+        else:
+            row = self.db.execute(
+                """
+                SELECT * FROM group_scene_consents
+                WHERE bot_key=? AND chat_id=? AND thread_key=? AND owner_id=?
+                  AND state='active'
+                ORDER BY decided_at DESC LIMIT 1
+                """,
+                (
+                    str(bot_key),
+                    int(chat_id or 0),
+                    int(thread_id or 0),
+                    int(owner_id),
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        with self.db:
+            self.db.execute(
+                """
+                UPDATE group_scene_consents SET state='closed', decided_at=?,
+                    source_text='', reply_json='{}', raw_message_json='{}'
+                WHERE scene_id=? AND state='active'
+                """,
+                (stamp, str(row["scene_id"])),
+            )
+        return row
+
+    def close_group_scenes_for_scope(
+        self,
+        bot_key: str,
+        chat_id: int,
+        thread_id: int | None,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        stamp = time.time() if now is None else float(now)
+        with self.db:
+            active = self.db.execute(
+                """
+                SELECT 1 FROM group_scene_consents
+                WHERE bot_key=? AND chat_id=? AND thread_key=?
+                  AND state='active' LIMIT 1
+                """,
+                (str(bot_key), int(chat_id), int(thread_id or 0)),
+            ).fetchone()
+            self.db.execute(
+                """
+                UPDATE group_scene_consents SET state='closed', decided_at=?,
+                    source_text='', reply_json='{}', raw_message_json='{}'
+                WHERE bot_key=? AND chat_id=? AND thread_key=?
+                  AND state IN ('pending', 'active')
+                """,
+                (stamp, str(bot_key), int(chat_id), int(thread_id or 0)),
+            )
+        return active is not None
+
+    def expire_group_scenes(
+        self,
+        bot_key: str,
+        chat_id: int,
+        thread_id: int | None,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        stamp = time.time() if now is None else float(now)
+        with self.db:
+            active = self.db.execute(
+                """
+                SELECT 1 FROM group_scene_consents
+                WHERE bot_key=? AND chat_id=? AND thread_key=?
+                  AND state='active' AND active_expires_at<? LIMIT 1
+                """,
+                (str(bot_key), int(chat_id), int(thread_id or 0), stamp),
+            ).fetchone()
+            self.db.execute(
+                """
+                UPDATE group_scene_consents SET state='expired', decided_at=?,
+                    source_text='', reply_json='{}', raw_message_json='{}'
+                WHERE bot_key=? AND chat_id=? AND thread_key=? AND (
+                    (state='active' AND active_expires_at<?) OR
+                    (state='pending' AND request_expires_at<?)
+                )
+                """,
+                (
+                    stamp,
+                    str(bot_key),
+                    int(chat_id),
+                    int(thread_id or 0),
+                    stamp,
+                    stamp,
+                ),
+            )
+        return active is not None

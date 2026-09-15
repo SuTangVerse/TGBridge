@@ -12,6 +12,8 @@
   "group_bot_call_limit": 8,
   "group_session_max_turns": 40,
   "group_session_max_age_seconds": 86400,
+  "group_scene_request_ttl_seconds": 300,
+  "group_scene_active_ttl_seconds": 900,
   "state_dir": "/tmp/sutang-telegram-bridge-demo",
   "agents": [
     {
@@ -20,6 +22,7 @@
       "command": ["/usr/bin/python3", "examples/echo_agent.py", "Agent A"],
       "aliases": ["Agent A"],
       "incremental_group_sessions": false,
+      "group_scene_consent": false,
       "private_cwd": ".",
       "group_cwd": ".",
       "media_root": "examples/media/agent-a"

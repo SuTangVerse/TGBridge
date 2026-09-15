@@ -18,12 +18,15 @@
   "bot_pair_call_limit": 4,
   "bot_pair_window_seconds": 120,
   "group_bot_call_limit": 8,
+  "group_scene_request_ttl_seconds": 300,
+  "group_scene_active_ttl_seconds": 900,
   "agents": [
     {
       "key": "agent-a",
       "token_env": "AGENT_A_TELEGRAM_BOT_TOKEN",
       "command": ["/usr/bin/sudo", "-n", "-u", "agent-a", "/usr/local/libexec/sutang-telegram-bridge/run-agent-a"],
       "aliases": ["Agent A"],
+      "group_scene_consent": false,
       "private_cwd": "/home/agent-a/private",
       "group_cwd": "/home/agent-a/shared",
       "media_root": "/home/agent-a/shared/.telegram-media",
