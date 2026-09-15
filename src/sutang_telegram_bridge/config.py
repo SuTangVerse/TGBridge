@@ -54,6 +54,13 @@ def load_config(path: str | Path) -> tuple[BridgeConfig, dict[str, str]]:
             raise ValueError(f"agent {key}: command must be a non-empty argv array")
         if not Path(command[0]).is_absolute():
             raise ValueError(f"agent {key}: command[0] must be an absolute path")
+        incremental_group_sessions = item.get(
+            "incremental_group_sessions", False
+        )
+        if type(incremental_group_sessions) is not bool:
+            raise ValueError(
+                f"agent {key}: incremental_group_sessions must be boolean"
+            )
         token_env = str(item.get("token_env", "")).strip()
         token = os.environ.get(token_env, "")
         if not token:
@@ -70,6 +77,7 @@ def load_config(path: str | Path) -> tuple[BridgeConfig, dict[str, str]]:
                 media_root=_path(item.get("media_root")),
                 attachment_group=str(item["attachment_group"]) if item.get("attachment_group") else None,
                 pass_env=tuple(str(v) for v in item.get("pass_env", [])),
+                incremental_group_sessions=incremental_group_sessions,
             )
         )
     if not agents:
@@ -146,6 +154,12 @@ def load_config(path: str | Path) -> tuple[BridgeConfig, dict[str, str]]:
         bot_pair_call_limit=_positive_int(raw, "bot_pair_call_limit", 4),
         bot_pair_window_seconds=float(raw.get("bot_pair_window_seconds", 120)),
         group_bot_call_limit=_positive_int(raw, "group_bot_call_limit", 8),
+        group_session_max_turns=_positive_int(
+            raw, "group_session_max_turns", 40
+        ),
+        group_session_max_age_seconds=float(
+            raw.get("group_session_max_age_seconds", 86400)
+        ),
     )
     if not 10 <= config.agent_timeout_seconds <= 1800:
         raise ValueError("agent_timeout_seconds must be between 10 and 1800")
@@ -157,4 +171,10 @@ def load_config(path: str | Path) -> tuple[BridgeConfig, dict[str, str]]:
         raise ValueError("bot_pair_window_seconds must be between 1 and 3600")
     if not 1 <= config.group_bot_call_limit <= 100:
         raise ValueError("group_bot_call_limit must be between 1 and 100")
+    if not 1 <= config.group_session_max_turns <= 200:
+        raise ValueError("group_session_max_turns must be between 1 and 200")
+    if not 60 <= config.group_session_max_age_seconds <= 7 * 86400:
+        raise ValueError(
+            "group_session_max_age_seconds must be between 60 and 604800"
+        )
     return config, tokens

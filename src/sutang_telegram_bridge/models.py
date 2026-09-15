@@ -16,6 +16,7 @@ class AgentConfig:
     media_root: Path | None = None
     attachment_group: str | None = None
     pass_env: tuple[str, ...] = ()
+    incremental_group_sessions: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,8 @@ class BridgeConfig:
     bot_pair_call_limit: int = 4
     bot_pair_window_seconds: float = 120.0
     group_bot_call_limit: int = 8
+    group_session_max_turns: int = 40
+    group_session_max_age_seconds: float = 86400.0
 
 
 @dataclass(frozen=True)

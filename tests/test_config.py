@@ -37,6 +37,44 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.bot_pair_call_limit, 4)
         self.assertEqual(config.bot_pair_window_seconds, 120)
         self.assertEqual(config.group_bot_call_limit, 8)
+        self.assertFalse(config.agents[0].incremental_group_sessions)
+        self.assertEqual(config.group_session_max_turns, 40)
+
+    def test_loads_bounded_incremental_group_session_settings(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"TEST_BOT_TOKEN": "test-token"}
+        ):
+            path = self._write(
+                Path(temp),
+                {
+                    "group_session_max_turns": 25,
+                    "group_session_max_age_seconds": 3600,
+                    "agents": [{
+                        "key": "a", "token_env": "TEST_BOT_TOKEN",
+                        "command": ["/bin/echo"],
+                        "incremental_group_sessions": True,
+                    }],
+                },
+            )
+            config, _ = load_config(path)
+        self.assertTrue(config.agents[0].incremental_group_sessions)
+        self.assertEqual(config.group_session_max_turns, 25)
+        self.assertEqual(config.group_session_max_age_seconds, 3600)
+
+    def test_rejects_non_boolean_incremental_group_setting(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"TEST_BOT_TOKEN": "test-token"}
+        ):
+            path = self._write(
+                Path(temp),
+                {"agents": [{
+                    "key": "a", "token_env": "TEST_BOT_TOKEN",
+                    "command": ["/bin/echo"],
+                    "incremental_group_sessions": "yes",
+                }]},
+            )
+            with self.assertRaisesRegex(ValueError, "must be boolean"):
+                load_config(path)
 
     def test_rejects_relative_executable(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"TEST_BOT_TOKEN": "x"}):

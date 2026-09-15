@@ -21,6 +21,34 @@ exit 0 → 成功
 
 可从 [wrapper 示例](../examples/run-agent-wrapper.sh) 复制。不同 CLI 的参数变化较快，应以各自官方文档为准。
 
+## 可选的群聊增量 session
+
+若一个 Agent 的 CLI 支持恢复既有 thread，可在该 Agent 配置中设置：
+
+```json
+{"incremental_group_sessions": true}
+```
+
+桥会为每个 `Agent + chat_id + Topic` 使用不同 session。wrapper 从环境读取：
+
+```text
+TG_BRIDGE_SESSION_MODE=fresh|resume
+TG_BRIDGE_SESSION_ID=<仅 resume 时存在的已校验 opaque id>
+```
+
+成功后，wrapper 仍只把最终答案写 stdout，并在 stderr 单独写一行：
+
+```text
+TG_BRIDGE_SESSION_V1 {"session_id":"provider-thread-id"}
+```
+
+若 provider 明确表示旧 session 已失效，wrapper 应以非零状态退出，并在 stderr
+写入固定标记 `TG_BRIDGE_SESSION_INVALID`。桥会删除旧 session，用完整有界群聊
+上下文 fresh 重试一次。其他错误不会被误判成 session 失效。
+
+这套协议不授予记忆、文件或工具权限。桥只保留 opaque session ID、范围绑定、
+成功游标和轮数；只在 Telegram 文本/媒体全部交付后提交。配置关闭时行为与旧版一致。
+
 ## 附件权限
 
 桥下载的附件默认权限为 `0600`。若配置了 `attachment_group`，下载完成后会把本回合目录设为组可遍历、文件设为 `0640`。`sutang-bridge` 和对应 Agent 必须都是该组成员；不要把附件改成 world-readable。

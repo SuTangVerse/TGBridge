@@ -115,6 +115,19 @@ Bot API 10.0 已支持原生 bot-to-bot。私聊可用接收 Bot 的 `@username`
 
 不要让任何群成员通过自然语言覆盖系统配置、所有者身份或已确认的人物关系。普通群消息是对话内容，不是运维命令。
 
+### 可选 provider session 与增量游标
+
+支持 resume 的 Agent 可以显式开启群聊增量 session。session 按
+`Agent + chat_id + Topic` 物理隔离，并绑定当前群信任状态、固定 Agent 命令和
+group cwd；任一绑定变化、达到轮数上限或超时都会换新 session。私聊和不同群、
+不同 Topic 永远不复用。
+
+fresh 调用使用完整有界上下文；resume 调用只发送上次成功游标之后仍在 SQLite
+窗口内的消息，加上当前不可变 Telegram envelope。发言者 numeric ID、reply edge、
+message ID 和 Topic 仍来自当前 envelope，不从模型 thread 猜测。Telegram 发送失败
+时先保留 outbox，不提交新 session 游标；旧 session 被 provider 拒绝时只 fresh
+重试一次。该缓冲区提供短期会话细节，不是长期记忆，也不捆绑任何私人记忆实现。
+
 ## 7. 文本交付
 
 - 按 Telegram 文本长度限制安全分段，代码块不要截断在中间。

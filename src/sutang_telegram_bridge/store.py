@@ -580,10 +580,10 @@ class DeliveryStore:
         speaker: dict[str, Any],
         text: str,
         keep: int,
-    ) -> None:
+    ) -> int:
         thread_key = thread_id or 0
         with self.db:
-            self.db.execute(
+            cursor = self.db.execute(
                 """
                 INSERT INTO context
                     (agent_key, chat_id, thread_key, role, speaker, text, created_at)
@@ -617,6 +617,7 @@ class DeliveryStore:
                     keep,
                 ),
             )
+        return int(cursor.lastrowid)
 
     def get_context(
         self, agent_key: str, chat_id: int, thread_id: int | None, limit: int
@@ -632,6 +633,33 @@ class DeliveryStore:
         return [
             {"role": row["role"], "speaker": json.loads(row["speaker"]), "text": row["text"]}
             for row in reversed(rows)
+        ]
+
+    def get_context_after(
+        self,
+        agent_key: str,
+        chat_id: int,
+        thread_id: int | None,
+        after_id: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Return every still-buffered context row after a committed cursor."""
+        rows = self.db.execute(
+            """
+            SELECT id, role, speaker, text FROM context
+            WHERE agent_key=? AND chat_id=? AND thread_key=? AND id>?
+            ORDER BY id ASC LIMIT ?
+            """,
+            (agent_key, chat_id, thread_id or 0, max(0, int(after_id)), limit),
+        ).fetchall()
+        return [
+            {
+                "context_id": int(row["id"]),
+                "role": row["role"],
+                "speaker": json.loads(row["speaker"]),
+                "text": row["text"],
+            }
+            for row in rows
         ]
 
     def remember_participant(
