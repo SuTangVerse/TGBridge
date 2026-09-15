@@ -38,6 +38,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.bot_pair_window_seconds, 120)
         self.assertEqual(config.group_bot_call_limit, 8)
         self.assertFalse(config.agents[0].incremental_group_sessions)
+        self.assertFalse(config.agents[0].group_scene_consent)
         self.assertEqual(config.group_session_max_turns, 40)
 
     def test_loads_bounded_incremental_group_session_settings(self):
@@ -75,6 +76,37 @@ class ConfigTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "must be boolean"):
                 load_config(path)
+
+    def test_loads_and_bounds_group_scene_consent_settings(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"TEST_BOT_TOKEN": "test-token"}
+        ):
+            path = self._write(
+                Path(temp),
+                {
+                    "group_scene_request_ttl_seconds": 120,
+                    "group_scene_active_ttl_seconds": 600,
+                    "agents": [{
+                        "key": "a", "token_env": "TEST_BOT_TOKEN",
+                        "command": ["/bin/echo"],
+                        "group_scene_consent": True,
+                    }],
+                },
+            )
+            config, _ = load_config(path)
+        self.assertTrue(config.agents[0].group_scene_consent)
+        self.assertEqual(config.group_scene_request_ttl_seconds, 120)
+        self.assertEqual(config.group_scene_active_ttl_seconds, 600)
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"TEST_BOT_TOKEN": "test-token"}
+        ):
+            with self.assertRaisesRegex(ValueError, "group_scene_active"):
+                load_config(
+                    self._write(
+                        Path(temp), {"group_scene_active_ttl_seconds": 30}
+                    )
+                )
 
     def test_rejects_relative_executable(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"TEST_BOT_TOKEN": "x"}):

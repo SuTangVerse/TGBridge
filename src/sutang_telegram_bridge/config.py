@@ -61,6 +61,9 @@ def load_config(path: str | Path) -> tuple[BridgeConfig, dict[str, str]]:
             raise ValueError(
                 f"agent {key}: incremental_group_sessions must be boolean"
             )
+        group_scene_consent = item.get("group_scene_consent", False)
+        if type(group_scene_consent) is not bool:
+            raise ValueError(f"agent {key}: group_scene_consent must be boolean")
         token_env = str(item.get("token_env", "")).strip()
         token = os.environ.get(token_env, "")
         if not token:
@@ -78,6 +81,7 @@ def load_config(path: str | Path) -> tuple[BridgeConfig, dict[str, str]]:
                 attachment_group=str(item["attachment_group"]) if item.get("attachment_group") else None,
                 pass_env=tuple(str(v) for v in item.get("pass_env", [])),
                 incremental_group_sessions=incremental_group_sessions,
+                group_scene_consent=group_scene_consent,
             )
         )
     if not agents:
@@ -160,6 +164,12 @@ def load_config(path: str | Path) -> tuple[BridgeConfig, dict[str, str]]:
         group_session_max_age_seconds=float(
             raw.get("group_session_max_age_seconds", 86400)
         ),
+        group_scene_request_ttl_seconds=float(
+            raw.get("group_scene_request_ttl_seconds", 300)
+        ),
+        group_scene_active_ttl_seconds=float(
+            raw.get("group_scene_active_ttl_seconds", 900)
+        ),
     )
     if not 10 <= config.agent_timeout_seconds <= 1800:
         raise ValueError("agent_timeout_seconds must be between 10 and 1800")
@@ -176,5 +186,13 @@ def load_config(path: str | Path) -> tuple[BridgeConfig, dict[str, str]]:
     if not 60 <= config.group_session_max_age_seconds <= 7 * 86400:
         raise ValueError(
             "group_session_max_age_seconds must be between 60 and 604800"
+        )
+    if not 30 <= config.group_scene_request_ttl_seconds <= 1800:
+        raise ValueError(
+            "group_scene_request_ttl_seconds must be between 30 and 1800"
+        )
+    if not 60 <= config.group_scene_active_ttl_seconds <= 86400:
+        raise ValueError(
+            "group_scene_active_ttl_seconds must be between 60 and 86400"
         )
     return config, tokens

@@ -17,6 +17,7 @@ class AgentConfig:
     attachment_group: str | None = None
     pass_env: tuple[str, ...] = ()
     incremental_group_sessions: bool = False
+    group_scene_consent: bool = False
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,8 @@ class BridgeConfig:
     group_bot_call_limit: int = 8
     group_session_max_turns: int = 40
     group_session_max_age_seconds: float = 86400.0
+    group_scene_request_ttl_seconds: float = 300.0
+    group_scene_active_ttl_seconds: float = 900.0
 
 
 @dataclass(frozen=True)

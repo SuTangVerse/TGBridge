@@ -71,6 +71,8 @@ python3 -m unittest discover -s tests -v
 
 - 支持新群加入后先由所有者审批再开始工作。
 - 支持所有者把群标记为可信群或外部群。
+- 可选为单个 Agent 开启“群聊临时私密场景”：只接受可信群中的 Owner 发起，
+  先在 Owner 私聊确认，再把原消息回放到原群、原 Topic；支持限时和立即关闭。
 - 支持 Agent 在所有者私聊中发起带 2–4 个按钮的操作审批。
 - 支持所有者暂停或恢复某个 Agent 的全部群聊。
 - 支持单独暂停或恢复某个 Agent 在指定群里的响应。
@@ -137,6 +139,7 @@ src/sutang_telegram_bridge/
 ├── media.py        # 图片/GIF/贴纸输出协议及作用域检查
 ├── identity.py     # 回复图身份 envelope 与误合并守卫
 ├── approval.py     # 所有者私聊审批按钮、严格载荷校验
+├── group_scene.py  # 群聊临时私密场景的隐藏请求协议
 ├── privacy.py      # bot-to-bot 输入输出的访问材料脱敏
 ├── transcription.py # 固定命令、无 shell 的可选语音转写
 ├── runner.py       # 无 shell 的 Agent 子进程和进程组取消
@@ -158,6 +161,9 @@ src/sutang_telegram_bridge/
 - `/groups` / `/pending_groups`：私聊查看群清单或补发待审批卡
 - `/delivery` / `/retry_update <update_id>`：私聊查看死信或重新入队
 - `/flow_status`：所有者在群内查看当前 epoch、整轮 Bot 调用数和滚动 pair 额度；查询本身不新建 epoch
+- `/scene_open <request>`：在可信群确定性发起一次私聊确认；功能需为该 Agent 显式开启
+- `/scene_status`：查看当前群、当前 Topic 的临时公开场景状态
+- `/scene_close`：立即结束当前场景，并清掉该 Agent 在当前 Topic 的有界上下文和 provider session
 
 群内未带 `@bot` 的控制命令由默认 Agent 认领一次，避免多个 Bot 重复执行。以上命令仅所有者 ID 有效。
 
@@ -178,6 +184,7 @@ src/sutang_telegram_bridge/
 - [安装与配置](docs/INSTALLATION.md)
 - [真实痛点与解决办法](docs/PAIN-POINTS.md)
 - [图片、GIF、贴纸、文档与压缩包](docs/MEDIA-AND-FILES.md)
+- [群聊临时私密场景](docs/GROUP-SCENE-CONSENT.md)
 - [安全与权限边界](docs/SECURITY.md)
 - [排障与验收](docs/TROUBLESHOOTING.md)
 - [Agent wrapper 接口](docs/AGENT-ADAPTERS.md)

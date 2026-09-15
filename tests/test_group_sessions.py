@@ -68,3 +68,25 @@ class GroupSessionStoreTests(unittest.TestCase):
             value = store.inspect("a:-10:0")
             self.assertEqual(value["session_id"], "newer")
             self.assertEqual(value["through_context_id"], 10)
+
+    def test_discard_prefix_clears_public_and_scene_variants_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = GroupSessionStore(Path(temp) / "sessions.json")
+            for key in (
+                "a:-10:7:public",
+                "a:-10:7:scene:one",
+                "a:-10:8:public",
+            ):
+                store.complete(
+                    key,
+                    binding="scope",
+                    previous_session_id=None,
+                    session_id="thread-" + key,
+                    through_context_id=1,
+                    now=100,
+                )
+            store.discard_prefix("a:-10:7")
+
+            self.assertEqual(store.inspect("a:-10:7:public")["session_id"], "")
+            self.assertEqual(store.inspect("a:-10:7:scene:one")["session_id"], "")
+            self.assertNotEqual(store.inspect("a:-10:8:public")["session_id"], "")
